@@ -30,7 +30,7 @@ def haversine(lat1, lon1, lat2, lon2):
 # Load and clean Yelp data (restaurants and retailers)
 @st.cache_data
 def load_yelp_data():
-    file_path = os.path.expanduser("~/Desktop/yelp_boston.csv")
+    file_path = os.path.expanduser("~/Desktop/streamlit_dashboard/yelp_boston.csv")
     try:
         df = pd.read_csv(file_path)
         df = df.dropna(subset=['name', 'latitude', 'longitude'])
@@ -50,7 +50,7 @@ def load_yelp_data():
 # Load and clean data_merged.csv (restaurants only)
 @st.cache_data
 def load_merged_data():
-    file_path = os.path.expanduser("~/Desktop/data_merged.csv")
+    file_path = os.path.expanduser("~/Desktop/streamlit_dashboard/data_merged.csvdata_merged.csv")
     try:
         df = pd.read_csv(file_path)
         df = df[df['error'] == False]

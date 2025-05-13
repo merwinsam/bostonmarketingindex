@@ -1,1 +1,1 @@
-streamlit\nplotly\npandas\nnumpy
+streamlit\npandas\nnumpy\nplotly

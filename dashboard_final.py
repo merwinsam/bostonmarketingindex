@@ -44,7 +44,7 @@ def load_yelp_data():
         df['categories'] = df.get('categories', 'Unknown').fillna('Unknown').astype(str).str.strip()
         return df
     except FileNotFoundError:
-        st.error("Error: yelp_boston.csv not found on Desktop.")
+        st.error("Error: yelp_boston.csv not found")
         return pd.DataFrame()
 
 # Load and clean data_merged.csv (restaurants only)
@@ -84,7 +84,7 @@ def load_merged_data():
                 (df['cuisines'].notnull()) & (df['cuisines'] != 'Unknown')]
         return df
     except FileNotFoundError:
-        st.error("Error: data_merged.csv not found on Desktop.")
+        st.error("Error: data_merged.csv not found.")
         return pd.DataFrame()
 
 # Merge datasets, assign neighborhoods, and handle retail
@@ -148,12 +148,12 @@ combined_restaurants, combined_retail, merged_df = merge_datasets()
 
 # Compute Product Price Index (for restaurants)
 @st.cache_data
-def compute_price_index(merged_df):
-    if merged_df.empty:
+def compute_price_index(df):
+    if df.empty:
         return 50.0
     price_map = {'$': 1, '$$ - $$$': 2, '$$$$': 3}
-    merged_df['price_numeric'] = merged_df['price_range'].map(price_map).fillna(2)
-    mean_price = merged_df['price_numeric'].mean()
+    df['price_numeric'] = df['price_range'].map(price_map).fillna(2)
+    mean_price = df['price_numeric'].mean()
     price_index = (mean_price - 1) / 2 * 100
     return round(price_index, 2)
 
@@ -162,7 +162,7 @@ census_data = {
     'median_household_income': 94755,
     'restaurant_establishments': len(combined_restaurants) if not combined_restaurants.empty else 0,
     'avg_employees_per_establishment': '20 - 99',
-    'broadband_penetration': 124466301
+    'broadband_penetration': 543499.35  # 639,411 * 0.85
 }
 
 if combined_restaurants.empty and combined_retail.empty:
@@ -181,10 +181,10 @@ with col2:
     selected_name = st.selectbox("Name", names)
 with col3:
     if business_type == "Restaurants":
-        neighborhoods = sorted(combined_restaurants['neighborhood'].unique().tolist())
+        neighborhoods = ['All'] + sorted(combined_restaurants['neighborhood'].unique().tolist())
     else:
-        neighborhoods = sorted(combined_retail['neighborhood'].unique().tolist())
-    selected_neighborhood = st.selectbox("Neighborhood", ['All'] + neighborhoods)
+        neighborhoods = ['All'] + sorted(combined_retail['neighborhood'].unique().tolist())
+    selected_neighborhood = st.selectbox("Neighborhood", neighborhoods)
 with col4:
     view = st.selectbox("View", ["Businesses (Micro)", "Neighborhoods (Macro)"])
     map_view = 'micro' if view == "Businesses (Micro)" else 'macro'
@@ -195,11 +195,25 @@ if business_type == "Restaurants":
 else:
     combined_df = combined_retail
 
-# Filter data
+# Linked filtering logic
 filtered_df = combined_df.copy()
 if selected_name != 'All':
     filtered_df = filtered_df[filtered_df['name'] == selected_name]
-if selected_neighborhood != 'All':
+    if not filtered_df.empty:
+        # Auto-select the neighborhood of the selected business
+        selected_neighborhood = filtered_df['neighborhood'].iloc[0]
+        st.session_state['selected_neighborhood'] = selected_neighborhood
+elif selected_neighborhood != 'All':
+    filtered_df = filtered_df[filtered_df['neighborhood'] == selected_neighborhood]
+    # Update name dropdown to show only businesses in the selected neighborhood
+    names = ['All'] + sorted(filtered_df['name'].unique().tolist())
+    if selected_name not in names:
+        selected_name = 'All'
+        st.session_state['selected_name'] = 'All'
+
+if map_view == 'micro' and selected_neighborhood != 'All':
+    filtered_df = filtered_df[filtered_df['neighborhood'] == selected_neighborhood]
+elif map_view == 'macro' and selected_neighborhood != 'All':
     filtered_df = filtered_df[filtered_df['neighborhood'] == selected_neighborhood]
 
 # Neighborhood aggregates
@@ -222,6 +236,9 @@ else:
 neighborhood_agg['rating'] = neighborhood_agg['rating'].round(2)
 neighborhood_agg = neighborhood_agg.rename(columns={'name': 'business_count'})
 
+if map_view == 'macro' and selected_neighborhood != 'All':
+    neighborhood_agg = neighborhood_agg[neighborhood_agg['neighborhood'] == selected_neighborhood]
+
 # Interesting fact
 if not neighborhood_agg.empty and 'rating' in neighborhood_agg.columns and not neighborhood_agg['rating'].isna().all():
     highest_rated = neighborhood_agg.loc[neighborhood_agg['rating'].idxmax()]
@@ -233,18 +250,34 @@ else:
 if map_view == 'micro':
     df_to_plot = filtered_df
     if business_type == "Restaurants":
-        hover_data = {'name': True, 'neighborhood': True, 'rating': True, 'review_count': True, 'latitude': False, 'longitude': False}
-        if 'cuisines' in filtered_df.columns:
-            hover_data['cuisines'] = True
-        if 'price_range' in filtered_df.columns:
-            hover_data['price_range'] = True
+        custom_data = ['name', 'neighborhood', 'rating', 'review_count', 'cuisines', 'price_range']
+        hover_template = (
+            "<b>Name of the Establishment</b>: %{customdata[0]}<br>"
+            "<b>Location</b>: %{customdata[1]}<br>"
+            "<b>Average rating by customers</b>: %{customdata[2]}<br>"
+            "<b>No. of reviews by customers</b>: %{customdata[3]}<br>"
+            "<b>Cuisines Served</b>: %{customdata[4]}<br>"
+            "<b>Cost of Food</b>: %{customdata[5]}<extra></extra>"
+        )
         title = "Restaurant Locations (Rating, Review Count, Cuisines, Price Range)"
     else:
-        hover_data = {'name': True, 'neighborhood': True, 'rating': True, 'review_count': True, 'latitude': False, 'longitude': False}
+        custom_data = ['name', 'neighborhood', 'rating', 'review_count']
+        hover_template = (
+            "<b>Name of the Establishment</b>: %{customdata[0]}<br>"
+            "<b>Location</b>: %{customdata[1]}<br>"
+            "<b>Average rating by customers</b>: %{customdata[2]}<br>"
+            "<b>No. of reviews by customers</b>: %{customdata[3]}<extra></extra>"
+        )
         title = "Retail Locations (Rating, Review Count)"
 else:
     df_to_plot = neighborhood_agg
-    hover_data = {'neighborhood': True, 'rating': True, 'review_count': True, 'business_count': True, 'latitude': False, 'longitude': False}
+    custom_data = ['neighborhood', 'rating', 'review_count', 'business_count']
+    hover_template = (
+        "<b>Location</b>: %{customdata[0]}<br>"
+        "<b>Average rating by customers</b>: %{customdata[1]}<br>"
+        "<b>No. of reviews by customers</b>: %{customdata[2]}<br>"
+        "<b>Business Count</b>: %{customdata[3]}<extra></extra>"
+    )
     title = "Neighborhood Aggregates (Avg Rating, Total Reviews, Business Count)"
 
 if not df_to_plot.empty and all(col in df_to_plot.columns for col in ['latitude', 'longitude', 'rating', 'review_count']):
@@ -259,9 +292,10 @@ if not df_to_plot.empty and all(col in df_to_plot.columns for col in ['latitude'
         zoom=11,
         center={'lat': 42.3601, 'lon': -71.0589},
         mapbox_style='open-street-map',
-        hover_data=hover_data,
-        title=title
+        title=title,
+        custom_data=custom_data
     )
+    fig.update_traces(hovertemplate=hover_template)
     fig.update_layout(margin={'l': 0, 'r': 0, 't': 50, 'b': 0}, height=500)
     st.plotly_chart(fig, use_container_width=True)
 else:
@@ -270,7 +304,7 @@ else:
 # Indexes table
 st.subheader("Marketing Indexes")
 if business_type == "Restaurants":
-    price_index = compute_price_index(merged_df)
+    price_index = compute_price_index(merged_df if selected_neighborhood == 'All' else merged_df[merged_df['neighborhood'] == selected_neighborhood])
     if map_view == 'macro' and selected_neighborhood != 'All':
         # Macro view: Use neighborhood-specific metrics
         neighborhood_data = neighborhood_agg[neighborhood_agg['neighborhood'] == selected_neighborhood]
@@ -282,57 +316,57 @@ if business_type == "Restaurants":
                 "Index": "Market Need",
                 "Metric": "Median Household Income",
                 "Value": f"${census_data['median_household_income']:,}",
-                "Calculation": "Hardcoded from ACS 2023 (B19013_001E) for Boston",
+                "Calculation": "This is a fixed number ($94,755) from the 2023 American Community Survey, showing the middle income for households in Boston.",
                 "Data Source": "https://data.census.gov/table/ACSDT5Y2023.B19013?q=B19013&g=040XX00US08_160XX00US2507000"
             },
             {
                 "Index": "Market Size",
                 "Metric": "Restaurant Establishments",
                 "Value": f"{business_count}",
-                "Calculation": f"Count of restaurants in {selected_neighborhood}",
-                "Data Source": "Yelp, data_merged.csv"
+                "Calculation": f"Open yelp_boston.csv and data_merged.csv. Filter yelp_boston.csv for rows where 'categories' includes 'Restaurants'. Combine with all rows from data_merged.csv. Keep only rows where 'neighborhood' is '{selected_neighborhood}'. Count the unique 'name' entries.",
+                "Data Source": "https://shorturl.at/1Es5F, https://shorturl.at/pYUfv"
             },
             {
                 "Index": "Market Competition",
                 "Metric": "Restaurants in Neighborhood",
                 "Value": f"{business_count}",
-                "Calculation": f"Number of restaurants in {selected_neighborhood} (proximity-assigned)",
-                "Data Source": "Yelp, data_merged.csv"
+                "Calculation": f"Same as Market Size: In yelp_boston.csv, take rows where 'categories' includes 'Restaurants'. Add all rows from data_merged.csv. Filter for 'neighborhood' = '{selected_neighborhood}'. Count unique 'name' entries.",
+                "Data Source": "https://shorturl.at/1Es5F, https://shorturl.at/pYUfv"
             },
             {
                 "Index": "Consumer Satisfaction",
                 "Metric": "Average Rating",
                 "Value": f"{avg_rating:.2f}" if isinstance(avg_rating, (int, float)) else avg_rating,
-                "Calculation": f"Mean rating of restaurants in {selected_neighborhood}",
-                "Data Source": "Yelp, data_merged.csv"
+                "Calculation": f"In yelp_boston.csv, take rows where 'categories' includes 'Restaurants'. Add all rows from data_merged.csv. Filter for 'neighborhood' = '{selected_neighborhood}'. Take the 'rating' column, add all values, and divide by the number of restaurants. Round to 2 decimals.",
+                "Data Source": "https://shorturl.at/1Es5F, https://shorturl.at/pYUfv"
             },
             {
                 "Index": "Market Social Media",
                 "Metric": "Average Review Count",
                 "Value": f"{avg_reviews:.0f}" if isinstance(avg_reviews, (int, float)) else avg_reviews,
-                "Calculation": f"Mean review count per restaurant in {selected_neighborhood}",
-                "Data Source": "Yelp, data_merged.csv"
+                "Calculation": f"In yelp_boston.csv, take rows where 'categories' includes 'Restaurants'. Add all rows from data_merged.csv. Filter for 'neighborhood' = '{selected_neighborhood}'. Sum the 'review_count' column. Divide by the number of unique 'name' entries. Round to the nearest whole number.",
+                "Data Source": "https://shorturl.at/1Es5F, https://shorturl.at/pYUfv"
             },
             {
                 "Index": "Supply Chain",
                 "Metric": "Avg Employees per Establishment",
                 "Value": f"{census_data['avg_employees_per_establishment']}",
-                "Calculation": "Hardcoded from ECNBASIC 2022 (EC2272BASIC) for Boston",
+                "Calculation": "This is a fixed range (20–99 employees) from the 2022 Economic Census, showing the typical number of workers per restaurant in Boston.",
                 "Data Source": "https://data.census.gov/table/ECNBASIC2022.EC2272BASIC?q=EC2272BASIC&g=160XX00US2507000"
             },
             {
                 "Index": "Market Technology",
                 "Metric": "Internet Access",
                 "Value": f"{census_data['broadband_penetration']:,}",
-                "Calculation": "Hardcoded from ACS 2023 (B28002), Sum of Internet Subscription + Internet Access without a subscription",
-                "Data Source": "https://data.census.gov/table?q=b28002"
+                "Calculation": "Take Boston’s population (639,411) from World Population Review. Multiply by 0.85 (85% of people with home internet from StateScoop survey). So, 639,411 × 0.85 = 543,499.35.",
+                "Data Source": "https://worldpopulationreview.com/us-cities/massachusetts/boston, https://statescoop.com/boston-digital-equity-survey-internet-affordability/"
             },
             {
                 "Index": "Product Price",
                 "Metric": "Average Price Level",
                 "Value": f"{price_index}",
-                "Calculation": "Mean of price_range ($=1, $$–$$$=2, $$$$=3), scaled to 0–100",
-                "Data Source": "data_merged.csv"
+                "Calculation": f"Open data_merged.csv. Filter for 'neighborhood' = '{selected_neighborhood}'. Take the 'price_range' column. Change '$' to 1, '$$ - $$$' to 2, '$$$$' to 3. If blank, use 2. Add all these numbers and divide by the number of rows. Subtract 1, divide by 2, multiply by 100, and round to 2 decimals.",
+                "Data Source": "https://shorturl.at/pYUfv"
             }
         ]
     else:
@@ -342,57 +376,57 @@ if business_type == "Restaurants":
                 "Index": "Market Need",
                 "Metric": "Median Household Income",
                 "Value": f"${census_data['median_household_income']:,}",
-                "Calculation": "Hardcoded from ACS 2023 (B19013_001E) for Boston",
+                "Calculation": "This is a fixed number ($94,755) from the 2023 American Community Survey, showing the middle income for households in Boston.",
                 "Data Source": "https://data.census.gov/table/ACSDT5Y2023.B19013?q=B19013&g=040XX00US08_160XX00US2507000"
             },
             {
                 "Index": "Market Size",
                 "Metric": "Restaurant Establishments",
                 "Value": f"{len(combined_restaurants):,}",
-                "Calculation": "Count of unique restaurants from yelp_boston.csv and data_merged.csv",
-                "Data Source": "Yelp, data_merged.csv"
+                "Calculation": "Open yelp_boston.csv and data_merged.csv. Filter yelp_boston.csv for rows where 'categories' includes 'Restaurants'. Combine with all rows from data_merged.csv. Count the unique 'name' entries.",
+                "Data Source": "https://shorturl.at/1Es5F, https://shorturl.at/pYUfv"
             },
             {
                 "Index": "Market Competition",
                 "Metric": "Avg Restaurants per Neighborhood",
                 "Value": f"{neighborhood_agg['business_count'].mean():.1f}" if not neighborhood_agg.empty else "0",
-                "Calculation": "Average number of restaurants per neighborhood (all assigned via proximity)",
-                "Data Source": "Yelp, data_merged.csv"
+                "Calculation": "In yelp_boston.csv, take rows where 'categories' includes 'Restaurants'. Add all rows from data_merged.csv. Group by 'neighborhood'. Count unique 'name' entries per neighborhood. Add these counts and divide by the number of neighborhoods. Round to 1 decimal.",
+                "Data Source": "https://shorturl.at/1Es5F, https://shorturl.at/pYUfv"
             },
             {
                 "Index": "Consumer Satisfaction",
                 "Metric": "Average Rating",
                 "Value": f"{combined_df['rating'].mean():.2f}" if not combined_df.empty and 'rating' in combined_df.columns else "N/A",
-                "Calculation": "Mean of rating across all restaurants",
-                "Data Source": "Yelp, data_merged.csv"
+                "Calculation": "In yelp_boston.csv, take rows where 'categories' includes 'Restaurants'. Add all rows from data_merged.csv. Take the 'rating' column, add all values, and divide by the number of restaurants. Round to 2 decimals.",
+                "Data Source": "https://shorturl.at/1Es5F, https://shorturl.at/pYUfv"
             },
             {
                 "Index": "Market Social Media",
                 "Metric": "Average Review Count",
                 "Value": f"{combined_df['review_count'].mean():.0f}" if not combined_df.empty and 'review_count' in combined_df.columns else "N/A",
-                "Calculation": "Mean of review_count as a proxy for engagement",
-                "Data Source": "Yelp, data_merged.csv"
+                "Calculation": "In yelp_boston.csv, take rows where 'categories' includes 'Restaurants'. Add all rows from data_merged.csv. Take the 'review_count' column, add all values, and divide by the number of restaurants. Round to the nearest whole number.",
+                "Data Source": "https://shorturl.at/1Es5F"
             },
             {
                 "Index": "Supply Chain",
                 "Metric": "Avg Employees per Establishment",
                 "Value": f"{census_data['avg_employees_per_establishment']}",
-                "Calculation": "Hardcoded from ECNBASIC 2022 (EC2272BASIC) for Boston",
+                "Calculation": "This is a fixed range (20–99 employees) from the 2022 Economic Census, showing the typical number of workers per restaurant in Boston.",
                 "Data Source": "https://data.census.gov/table/ECNBASIC2022.EC2272BASIC?q=EC2272BASIC&g=160XX00US2507000"
             },
             {
                 "Index": "Market Technology",
                 "Metric": "Internet Access",
                 "Value": f"{census_data['broadband_penetration']:,}",
-                "Calculation": "Hardcoded from ACS 2023 (B28002), Sum of Internet Subscription + Internet Access without a subscription",
-                "Data Source": "https://data.census.gov/table?q=b28002"
+                "Calculation": "Take Boston’s population (639,411) from World Population Review. Multiply by 0.85 (85% of people with home internet from StateScoop survey). So, 639,411 × 0.85 = 543,499.35.",
+                "Data Source": "https://worldpopulationreview.com/us-cities/massachusetts/boston, https://statescoop.com/boston-digital-equity-survey-internet-affordability"
             },
             {
                 "Index": "Product Price",
                 "Metric": "Average Price Level",
                 "Value": f"{price_index}",
-                "Calculation": "Mean of price_range ($=1, $$–$$$=2, $$$$=3), scaled to 0–100",
-                "Data Source": "data_merged.csv"
+                "Calculation": "Open data_merged.csv. Take the 'price_range' column. Change '$' to 1, '$$ - $$$' to 2, '$$$$' to 3. If blank, use 2. Add all these numbers and divide by the number of rows. Subtract 1, divide by 2, multiply by 100, and round to 2 decimals.",
+                "Data Source": "https://shorturl.at/pYUfv"
             }
         ]
 else:
@@ -407,36 +441,36 @@ else:
                 "Index": "Market Need",
                 "Metric": "Median Household Income",
                 "Value": f"${census_data['median_household_income']:,}",
-                "Calculation": "Hardcoded from ACS 2023 (B19013_001E) for Boston",
+                "Calculation": "This is a fixed number ($94,755) from the 2023 American Community Survey, showing the middle income for households in Boston.",
                 "Data Source": "https://data.census.gov/table/ACSDT5Y2023.B19013?q=B19013&g=040XX00US08_160XX00US2507000"
             },
             {
                 "Index": "Market Size",
                 "Metric": "Retail Establishments",
                 "Value": f"{business_count}",
-                "Calculation": f"Count of retailers in {selected_neighborhood}",
-                "Data Source": "Yelp"
+                "Calculation": f"Open yelp_boston.csv. Filter for rows where 'categories' includes 'Grocery', 'Delis', or 'Convenience Stores'. Keep only rows where 'neighborhood' is '{selected_neighborhood}'. Count the unique 'name' entries.",
+                "Data Source": "https://shorturl.at/1Es5F"
             },
             {
                 "Index": "Market Competition",
                 "Metric": "Retailers in Neighborhood",
                 "Value": f"{business_count}",
-                "Calculation": f"Number of retailers in {selected_neighborhood} (proximity-assigned)",
-                "Data Source": "Yelp"
+                "Calculation": f"Same as Market Size: In yelp_boston.csv, take rows where 'categories' includes 'Grocery', 'Delis', or 'Convenience Stores'. Filter for 'neighborhood' = '{selected_neighborhood}'. Count unique 'name' entries.",
+                "Data Source": "https://shorturl.at/1Es5F"
             },
             {
                 "Index": "Consumer Satisfaction",
                 "Metric": "Average Rating",
                 "Value": f"{avg_rating:.2f}" if isinstance(avg_rating, (int, float)) else avg_rating,
-                "Calculation": f"Mean rating of retailers in {selected_neighborhood}",
-                "Data Source": "Yelp"
+                "Calculation": f"In yelp_boston.csv, take rows where 'categories' includes 'Grocery', 'Delis', or 'Convenience Stores'. Filter for 'neighborhood' = '{selected_neighborhood}'. Take the 'rating' column, add all values, and divide by the number of retailers. Round to 2 decimals.",
+                "Data Source": "https://shorturl.at/1Es5F"
             },
             {
                 "Index": "Market Technology",
                 "Metric": "Internet Access",
                 "Value": f"{census_data['broadband_penetration']:,}",
-                "Calculation": "Hardcoded from ACS 2023 (B28002), Sum of Internet Subscription + Internet Access without a subscription",
-                "Data Source": "https://data.census.gov/table?q=b28002"
+                "Calculation": "Take Boston’s population (639,411) from World Population Review. Multiply by 0.85 (85% of people with home internet from StateScoop survey). So, 639,411 × 0.85 = 543,499.35.",
+                "Data Source": "https://worldpopulationreview.com/us-cities/massachusetts/boston, https://statescoop.com/boston-digital-equity-survey-internet-affordability/"
             }
         ]
     else:
@@ -446,36 +480,36 @@ else:
                 "Index": "Market Need",
                 "Metric": "Median Household Income",
                 "Value": f"${census_data['median_household_income']:,}",
-                "Calculation": "Hardcoded from ACS 2023 (B19013_001E) for Boston",
+                "Calculation": "This is a fixed number ($94,755) from the 2023 American Community Survey, showing the middle income for households in Boston.",
                 "Data Source": "https://data.census.gov/table/ACSDT5Y2023.B19013?q=B19013&g=040XX00US08_160XX00US2507000"
             },
             {
                 "Index": "Market Size",
                 "Metric": "Retail Establishments",
                 "Value": f"{len(combined_retail):,}",
-                "Calculation": "Count of grocery, deli, and convenience stores",
-                "Data Source": "Yelp"
+                "Calculation": "Open yelp_boston.csv. Filter for rows where 'categories' includes 'Grocery', 'Delis', or 'Convenience Stores'. Count the unique 'name' entries.",
+                "Data Source": "https://shorturl.at/1Es5F"
             },
             {
                 "Index": "Market Competition",
                 "Metric": "Avg Retailers per Neighborhood",
                 "Value": f"{neighborhood_agg['business_count'].mean():.1f}" if not neighborhood_agg.empty else "0",
-                "Calculation": "Average number of retailers per neighborhood (all assigned via proximity)",
-                "Data Source": "Yelp"
+                "Calculation": "In yelp_boston.csv, take rows where 'categories' includes 'Grocery', 'Delis', or 'Convenience Stores'. Group by 'neighborhood'. Count unique 'name' entries per neighborhood. Add these counts and divide by the number of neighborhoods. Round to 1 decimal.",
+                "Data Source": "https://shorturl.at/1Es5F"
             },
             {
                 "Index": "Consumer Satisfaction",
                 "Metric": "Average Rating",
                 "Value": f"{combined_df['rating'].mean():.2f}" if not combined_df.empty and 'rating' in combined_df.columns and not combined_df['rating'].empty else "N/A",
-                "Calculation": "Mean of rating across all retailers",
-                "Data Source": "Yelp"
+                "Calculation": "In yelp_boston.csv, take rows where 'categories' includes 'Grocery', 'Delis', or 'Convenience Stores'. Take the 'rating' column, add all values, and divide by the number of retailers. Round to 2 decimals.",
+                "Data Source": "https://shorturl.at/1Es5F"
             },
             {
                 "Index": "Market Technology",
                 "Metric": "Internet Access",
                 "Value": f"{census_data['broadband_penetration']:,}",
-                "Calculation": "Hardcoded from ACS 2023 (B28002), Sum of Internet Subscription + Internet Access without a subscription",
-                "Data Source": "https://data.census.gov/table?q=b28002"
+                "Calculation": "Take Boston’s population (639,411) from World Population Review. Multiply by 0.85 (85% of people with home internet from StateScoop survey). So, 639,411 × 0.85 = 543,499.35.",
+                "Data Source": "https://worldpopulationreview.com/us-cities/massachusetts/boston, https://statescoop.com/boston-digital-equity-survey-internet-affordability/"
             }
         ]
 
@@ -486,9 +520,9 @@ st.table(indexes)
 st.markdown("""
 This dashboard visualizes marketing indexes for Boston's retail and restaurant sectors using Yelp and Census data. 
 Restaurants are included only if they have complete name, rating, review count, price range, and cuisines data, with neighborhoods assigned based on proximity to known locations from yelp_boston.csv. 
-Retailers (grocery, deli, convenience stores) are shown with available data. The table details each index's calculation and source, with Census data hyperlinked to [data.census.gov](https://data.census.gov/) in the Data Source column. 
+Retailers (grocery, deli, convenience stores) are shown with available data from yelp_boston.csv. The table details each index's calculation and source, with Census data hyperlinked to https://data.census.gov/ in the Data Source column. 
 In Macro view, indexes reflect neighborhood-specific metrics when a neighborhood is selected. 
 Use the filters to explore businesses or neighborhoods on the map (ratings: color, review counts: size, cuisines/price range: hover for restaurants). 
-Census data is hardcoded from ACS 2023 (B19013, B28002) and ECNBASIC 2022 (EC2272BASIC); update values from [data.census.gov](https://data.census.gov/) for accuracy.
+Census data is hardcoded from ACS 2023 (B19013, B28002) and ECNBASIC 2022 (EC2272BASIC); update values from https://data.census.gov/ for accuracy.
 """)
 
